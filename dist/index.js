@@ -33232,7 +33232,9 @@ async function run() {
             .flatMap(array => array)
             .forEach(issue_event => {
             if (issue_event.event == 'review_request_removed') {
-                trimmed_owners.splice(trimmed_owners.indexOf(issue_event.actor.login), 1);
+                const remove = issue_event.actor.login;
+                notice(`User ${remove} cannot be requested because they have removed themself as reviewer.`);
+                trimmed_owners.splice(trimmed_owners.indexOf(remove), 1);
             }
         });
         //Remove Invalid users
