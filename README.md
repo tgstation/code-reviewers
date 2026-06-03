@@ -8,5 +8,5 @@ The map of modified files to code owners is parsed from the Github Code Owners f
 Code Reviewers takes the following inputs:
 Name | Required | Default | Description
 ------------ | ------------- | ------------- | -------------
-token | no | github.repository_owner | Token used for Github API calls.
-file | no | /.github/CODEOWNERS | Full path to the code owners file
+token | no | github.repository_owner |  "Github token used for Github API. Only needed to increase rate limit, may not be provided."
+file | no | /.github/CODEOWNERS | "Path to the codeowners file. Relative to the repository root."
