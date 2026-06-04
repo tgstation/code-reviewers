@@ -156,10 +156,10 @@ async function run(): Promise<void> {
         }
 
         //Remove PR author from the user list
-        trimmed_owners.splice(
-            trimmed_owners.indexOf(response.data.user.login),
-            1
-        )
+        const index = trimmed_owners.indexOf(response.data.user.login)
+        if (index >= 0) {
+            trimmed_owners.splice(index, 1)
+        }
 
         //No reviewers so stop here
         if (!trimmed_owners.length) {
