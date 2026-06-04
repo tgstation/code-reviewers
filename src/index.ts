@@ -148,18 +148,18 @@ async function run(): Promise<void> {
         info(`Owners With Modified Files: ${ownersWithModifiedFiles.join(' ')}`)
 
         //# Part 2: Requesting reviews based on owners listed above
+        const trimmed_owners: string[] = []
 
         //Remove the @ symbol at the start of every owner name
-        const trimmed_owners: string[] = []
         for (const owner of ownersWithModifiedFiles) {
             trimmed_owners.push(owner.replace('@', ''))
         }
 
         //Remove PR author from the user list
-        trimmed_owners.splice(
-            trimmed_owners.indexOf(response.data.user.login),
-            1
-        )
+        const index = trimmed_owners.indexOf(response.data.user.login)
+        if (index >= 0) {
+            trimmed_owners.splice(index, 1)
+        }
 
         //No reviewers so stop here
         if (!trimmed_owners.length) {
