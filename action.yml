@@ -1,0 +1,16 @@
+name: 'Code Owners Review Notify'
+description: 'Notify code owners about changes in this pull request'
+inputs:
+  token:
+    description:
+      "Github token used for Github API. Only needed to increase rate limit, may not be provided."
+    required: true
+    default: ${{ github.token }}
+  file:
+    description:
+      "Path to the codeowners file. Relative to the repository root."
+    required: false
+    default: "/.github/CODEOWNERS"
+runs:
+  using: 'node24'
+  main: 'dist/index.js'
