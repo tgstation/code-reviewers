@@ -33193,6 +33193,15 @@ async function run() {
             repo: core_repo,
             pull_number: pull_number
         });
+        //For draft Pr's put any requested reviewers to sleep
+        if (response.data.draft) {
+            await octokit.rest.pulls.requestReviewers({
+                owner: core_owner,
+                repo: core_repo,
+                pull_number: pull_number
+            });
+            return;
+        }
         if (response.data.changed_files > FILE_LIMIT) {
             setFailed(`PR has ${response.data.changed_files} files, which is more than the limit of ${FILE_LIMIT}. Skipping codeowner assignment.`);
             return;
