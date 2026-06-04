@@ -33193,15 +33193,6 @@ async function run() {
             repo: core_repo,
             pull_number: pull_number
         });
-        //For draft Pr's put any requested reviewers to sleep
-        if (response.data.draft) {
-            await octokit.rest.pulls.requestReviewers({
-                owner: core_owner,
-                repo: core_repo,
-                pull_number: pull_number
-            });
-            return;
-        }
         if (response.data.changed_files > FILE_LIMIT) {
             setFailed(`PR has ${response.data.changed_files} files, which is more than the limit of ${FILE_LIMIT}. Skipping codeowner assignment.`);
             return;
@@ -33219,8 +33210,8 @@ async function run() {
         // Display all code owners
         info(`Owners With Modified Files: ${ownersWithModifiedFiles.join(' ')}`);
         //# Part 2: Requesting reviews based on owners listed above
-        //Remove the @ symbol at the start of every owner name
         const trimmed_owners = [];
+        //Remove the @ symbol at the start of every owner name
         for (const owner of ownersWithModifiedFiles) {
             trimmed_owners.push(owner.replace('@', ''));
         }
