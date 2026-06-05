@@ -167,7 +167,7 @@ async function run(): Promise<void> {
             return
         }
 
-        //Remove users that removed themselves from review
+        //Remove users that have previously removed/added themself to review
         ;(
             await octokit.paginate<
                 RestEndpointMethodTypes['issues']['listEvents']['response']['data']
@@ -180,13 +180,28 @@ async function run(): Promise<void> {
             )
         )
             .flatMap(array => array)
+            .reverse() //reverse to get latest events
             .forEach(issue_event => {
-                if (issue_event.event == 'review_request_removed') {
+                const event = issue_event.event
+                if (
+                    event == 'review_request_removed' ||
+                    event == 'review_requested'
+                ) {
                     const remove = issue_event.actor.login
-                    notice(
-                        `User ${remove} cannot be requested because they have removed themself as reviewer.`
-                    )
-                    trimmed_owners.splice(trimmed_owners.indexOf(remove), 1)
+
+                    //skip bot events
+                    if (remove == 'github-actions[bot]') {
+                        return
+                    }
+
+                    //if user has triggered this event then we skip it
+                    const index = trimmed_owners.indexOf(remove)
+                    if (index >= 0) {
+                        notice(
+                            `User ${remove} has ${event == 'review_request_removed' ? 'previously removed' : 'already added'} themself as a reviewer.`
+                        )
+                        trimmed_owners.splice(index, 1)
+                    }
                 }
             })
 
