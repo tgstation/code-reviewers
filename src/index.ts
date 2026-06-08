@@ -55,7 +55,7 @@ function GetOwnersWithModifiedFiles(
                 if (!regex_match) {
                     let regex = ownerPath
                     //No slashes at all, match any file at any level
-                    const fileMode = regex.includes('/')
+                    const fileMode = !regex.includes('/')
                     //Remove leading slash before generating Regex as modified files from PR don't start with slash aka src/code/Program.cs and not /src...
                     regex = regex.replace('/', '')
 
@@ -167,56 +167,22 @@ async function run(): Promise<void> {
             return
         }
 
-        //Remove users that have previously removed/added themself to review
-        ;(
-            await octokit.paginate<
-                RestEndpointMethodTypes['issues']['listEvents']['response']['data']
-            >(
-                octokit.rest.issues.listEvents.endpoint.merge({
-                    owner: core_owner,
-                    repo: core_repo,
-                    issue_number: pull_number
-                })
-            )
-        )
-            .flatMap(array => array)
-            .reverse() //reverse to get latest events
-            .forEach(issue_event => {
-                const event = issue_event.event
-                if (
-                    event == 'review_request_removed' ||
-                    event == 'review_requested'
-                ) {
-                    const remove = issue_event.actor.login
-
-                    //skip bot events
-                    if (remove == 'github-actions[bot]') {
-                        return
-                    }
-
-                    //if user has triggered this event then we skip it
-                    const index = trimmed_owners.indexOf(remove)
-                    if (index >= 0) {
-                        notice(
-                            `User ${remove} has ${event == 'review_request_removed' ? 'previously removed' : 'already added'} themself as a reviewer.`
-                        )
-                        trimmed_owners.splice(index, 1)
-                    }
-                }
-            })
-
         //Remove Invalid users
         for (const user of trimmed_owners.toReversed()) {
-            const response: RestEndpointMethodTypes['issues']['checkUserCanBeAssigned']['response'] =
-                await octokit.rest.issues.checkUserCanBeAssigned({
-                    owner: core_owner,
-                    repo: core_repo,
-                    assignee: user
-                })
-            if (response.status != 204) {
-                notice(
-                    `User ${user} cannot be requested for review, make sure they are a member of a team with read access.`
-                )
+            try {
+                const response: RestEndpointMethodTypes['issues']['checkUserCanBeAssigned']['response'] =
+                    await octokit.rest.issues.checkUserCanBeAssigned({
+                        owner: core_owner,
+                        repo: core_repo,
+                        assignee: user
+                    })
+                if (response.status != 204) {
+                    throw new Error(
+                        `Cannot be requested for review, make sure they are a member of a team with read access.`
+                    )
+                }
+            } catch (ex) {
+                notice(`Error verifying user ${user}: ${ex}`)
                 trimmed_owners.splice(trimmed_owners.indexOf(user), 1)
             }
         }
