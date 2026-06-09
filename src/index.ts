@@ -170,19 +170,15 @@ async function run(): Promise<void> {
         //Remove Invalid users
         for (const user of trimmed_owners.toReversed()) {
             try {
-                const response: RestEndpointMethodTypes['issues']['checkUserCanBeAssigned']['response'] =
-                    await octokit.rest.issues.checkUserCanBeAssigned({
-                        owner: core_owner,
-                        repo: core_repo,
-                        assignee: user
-                    })
-                if (response.status != 204) {
-                    throw new Error(
-                        `Cannot be requested for review, make sure they are a member of a team with read access.`
-                    )
-                }
-            } catch (ex) {
-                notice(`Error verifying user ${user}: ${ex}`)
+                await octokit.rest.issues.checkUserCanBeAssigned({
+                    owner: core_owner,
+                    repo: core_repo,
+                    assignee: user
+                })
+            } catch {
+                notice(
+                    `User ${user}: Cannot be requested for review, make sure they are a member of a team with read access.`
+                )
                 trimmed_owners.splice(trimmed_owners.indexOf(user), 1)
             }
         }
