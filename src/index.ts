@@ -47,10 +47,18 @@ function GetOwnersWithModifiedFiles(
     owners: Set<string>
 ): void {
     for (const file of modifiedFiles) {
+        //we literarly have no owners to parse so drop
+        if (owners.size == codeowners.size) {
+            return
+        }
+
         for (const [owner, paths] of codeowners.entries()) {
+            //don't parse the same owner twice
             if (owners.has(owner)) {
                 continue
             }
+
+            //check if the owner owns this file
             for (const ownerPath of paths) {
                 let regex_match: RegExp | undefined = regex_files.get(ownerPath)
                 if (!regex_match) {
