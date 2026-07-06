@@ -2691,6 +2691,7 @@ function requireDispatcherBase () {
 
 	  get webSocketOptions () {
 	    return {
+	      maxFragments: this[kWebSocketOptions].maxFragments ?? 131072,
 	      maxPayloadSize: this[kWebSocketOptions].maxPayloadSize ?? 128 * 1024 * 1024
 	    }
 	  }
@@ -8642,6 +8643,9 @@ function requireClientH1 () {
 	const FastBuffer = Buffer[Symbol.species];
 	const addListener = util.addListener;
 	const removeAllListeners = util.removeAllListeners;
+	const kIdleSocketValidation = Symbol('kIdleSocketValidation');
+	const kIdleSocketValidationTimeout = Symbol('kIdleSocketValidationTimeout');
+	const kSocketUsed = Symbol('kSocketUsed');
 
 	let extractBody;
 
@@ -8956,6 +8960,11 @@ function requireClientH1 () {
 	      return -1
 	    }
 
+	    if (client[kRunning] === 0) {
+	      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)));
+	      return -1
+	    }
+
 	    const request = client[kQueue][client[kRunningIdx]];
 	    if (!request) {
 	      return -1
@@ -9056,6 +9065,11 @@ function requireClientH1 () {
 
 	    /* istanbul ignore next: difficult to make a test case for */
 	    if (socket.destroyed) {
+	      return -1
+	    }
+
+	    if (client[kRunning] === 0) {
+	      util.destroy(socket, new SocketError('bad response', util.getSocketInfo(socket)));
 	      return -1
 	    }
 
@@ -9232,6 +9246,7 @@ function requireClientH1 () {
 	    request.onComplete(headers);
 
 	    client[kQueue][client[kRunningIdx]++] = null;
+	    socket[kSocketUsed] = true;
 
 	    if (socket[kWriting]) {
 	      assert(client[kRunning] === 0);
@@ -9290,6 +9305,9 @@ function requireClientH1 () {
 	  socket[kWriting] = false;
 	  socket[kReset] = false;
 	  socket[kBlocking] = false;
+	  socket[kIdleSocketValidation] = 0;
+	  socket[kIdleSocketValidationTimeout] = null;
+	  socket[kSocketUsed] = false;
 	  socket[kParser] = new Parser(client, socket, llhttpInstance);
 
 	  addListener(socket, 'error', function (err) {
@@ -9335,6 +9353,8 @@ function requireClientH1 () {
 	  addListener(socket, 'close', function () {
 	    const client = this[kClient];
 	    const parser = this[kParser];
+
+	    clearIdleSocketValidation(this);
 
 	    if (parser) {
 	      if (!this[kError] && parser.statusCode && !parser.shouldKeepAlive) {
@@ -9401,7 +9421,7 @@ function requireClientH1 () {
 	      return socket.destroyed
 	    },
 	    busy (request) {
-	      if (socket[kWriting] || socket[kReset] || socket[kBlocking]) {
+	      if (socket[kWriting] || socket[kReset] || socket[kBlocking] || socket[kIdleSocketValidation] === 1) {
 	        return true
 	      }
 
@@ -9439,6 +9459,31 @@ function requireClientH1 () {
 	  }
 	}
 
+	function clearIdleSocketValidation (socket) {
+	  if (socket[kIdleSocketValidationTimeout]) {
+	    clearTimeout(socket[kIdleSocketValidationTimeout]);
+	    socket[kIdleSocketValidationTimeout] = null;
+	  }
+
+	  socket[kIdleSocketValidation] = 0;
+	}
+
+	function scheduleIdleSocketValidation (client, socket) {
+	  socket[kIdleSocketValidation] = 1;
+	  socket[kIdleSocketValidationTimeout] = setTimeout(() => {
+	    socket[kIdleSocketValidationTimeout] = null;
+	    socket[kIdleSocketValidation] = 2;
+
+	    if (client[kSocket] === socket && !socket.destroyed) {
+	      client[kResume]();
+	    }
+	  }, 0);
+	  socket[kIdleSocketValidationTimeout].unref?.();
+	}
+
+	/**
+	 * @param {import('./client.js')} client
+	 */
 	function resumeH1 (client) {
 	  const socket = client[kSocket];
 
@@ -9451,6 +9496,32 @@ function requireClientH1 () {
 	    } else if (socket[kNoRef] && socket.ref) {
 	      socket.ref();
 	      socket[kNoRef] = false;
+	    }
+
+	    if (client[kRunning] === 0 && client[kPending] > 0 && socket[kSocketUsed]) {
+	      if (socket[kIdleSocketValidation] === 0) {
+	        scheduleIdleSocketValidation(client, socket);
+	        socket[kParser].readMore();
+	        if (socket.destroyed) {
+	          return
+	        }
+	        return
+	      }
+
+	      if (socket[kIdleSocketValidation] === 1) {
+	        socket[kParser].readMore();
+	        if (socket.destroyed) {
+	          return
+	        }
+	        return
+	      }
+	    }
+
+	    if (client[kRunning] === 0) {
+	      socket[kParser].readMore();
+	      if (socket.destroyed) {
+	        return
+	      }
 	    }
 
 	    if (client[kSize] === 0) {
@@ -9546,6 +9617,7 @@ function requireClientH1 () {
 	  }
 
 	  const socket = client[kSocket];
+	  clearIdleSocketValidation(socket);
 
 	  const abort = (err) => {
 	    if (request.aborted || request.completed) {
@@ -24028,32 +24100,25 @@ function requireParse () {
 	    // If the attribute-name case-insensitively matches the string
 	    // "SameSite", the user agent MUST process the cookie-av as follows:
 
-	    // 1. Let enforcement be "Default".
-	    let enforcement = 'Default';
-
 	    const attributeValueLowercase = attributeValue.toLowerCase();
-	    // 2. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "None", set enforcement to "None".
-	    if (attributeValueLowercase.includes('none')) {
-	      enforcement = 'None';
-	    }
 
-	    // 3. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "Strict", set enforcement to "Strict".
-	    if (attributeValueLowercase.includes('strict')) {
-	      enforcement = 'Strict';
+	    // 1. If cookie-av's attribute-value is a case-insensitive match for
+	    //    "None", append an attribute to the cookie-attribute-list with an
+	    //    attribute-name of "SameSite" and an attribute-value of "None".
+	    if (attributeValueLowercase === 'none') {
+	      cookieAttributeList.sameSite = 'None';
+	    } else if (attributeValueLowercase === 'strict') {
+	      // 2. If cookie-av's attribute-value is a case-insensitive match for
+	      //    "Strict", append an attribute to the cookie-attribute-list with
+	      //    an attribute-name of "SameSite" and an attribute-value of
+	      //    "Strict".
+	      cookieAttributeList.sameSite = 'Strict';
+	    } else if (attributeValueLowercase === 'lax') {
+	      // 3. If cookie-av's attribute-value is a case-insensitive match for
+	      //    "Lax", append an attribute to the cookie-attribute-list with an
+	      //    attribute-name of "SameSite" and an attribute-value of "Lax".
+	      cookieAttributeList.sameSite = 'Lax';
 	    }
-
-	    // 4. If cookie-av's attribute-value is a case-insensitive match for
-	    //    "Lax", set enforcement to "Lax".
-	    if (attributeValueLowercase.includes('lax')) {
-	      enforcement = 'Lax';
-	    }
-
-	    // 5. Append an attribute to the cookie-attribute-list with an
-	    //    attribute-name of "SameSite" and an attribute-value of
-	    //    enforcement.
-	    cookieAttributeList.sameSite = enforcement;
 	  } else {
 	    cookieAttributeList.unparsed ??= [];
 
@@ -25639,6 +25704,11 @@ function requireReceiver () {
 	const { PerMessageDeflate } = requirePermessageDeflate();
 	const { MessageSizeExceededError } = requireErrors();
 
+	function failWebsocketConnectionWithCode (ws, code, reason) {
+	  closeWebSocketConnection(ws, code, reason, Buffer.byteLength(reason));
+	  failWebsocketConnection(ws, reason);
+	}
+
 	// This code was influenced by ws released under the MIT license.
 	// Copyright (c) 2011 Einar Otto Stangvik <einaros@gmail.com>
 	// Copyright (c) 2013 Arnout Kazemier and contributors
@@ -25659,18 +25729,22 @@ function requireReceiver () {
 	  #extensions
 
 	  /** @type {number} */
+	  #maxFragments
+
+	  /** @type {number} */
 	  #maxPayloadSize
 
 	  /**
 	   * @param {import('./websocket').WebSocket} ws
 	   * @param {Map<string, string>|null} extensions
-	   * @param {{ maxPayloadSize?: number }} [options]
+	   * @param {{ maxFragments?: number, maxPayloadSize?: number }} [options]
 	   */
 	  constructor (ws, extensions, options = {}) {
 	    super();
 
 	    this.ws = ws;
 	    this.#extensions = extensions == null ? new Map() : extensions;
+	    this.#maxFragments = options.maxFragments ?? 0;
 	    this.#maxPayloadSize = options.maxPayloadSize ?? 0;
 
 	    if (this.#extensions.has('permessage-deflate')) {
@@ -25694,9 +25768,9 @@ function requireReceiver () {
 	    if (
 	      this.#maxPayloadSize > 0 &&
 	      !isControlFrame(this.#info.opcode) &&
-	      this.#info.payloadLength > this.#maxPayloadSize
+	      this.#info.payloadLength + this.#fragmentsBytes > this.#maxPayloadSize
 	    ) {
-	      failWebsocketConnection(this.ws, 'Payload size exceeds maximum allowed size');
+	      failWebsocketConnectionWithCode(this.ws, 1009, 'Payload size exceeds maximum allowed size');
 	      return false
 	    }
 
@@ -25861,10 +25935,12 @@ function requireReceiver () {
 	          this.#state = parserStates.INFO;
 	        } else {
 	          if (!this.#info.compressed) {
-	            this.writeFragments(body);
+	            if (!this.writeFragments(body)) {
+	              return
+	            }
 
 	            if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
-	              failWebsocketConnection(this.ws, new MessageSizeExceededError().message);
+	              failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message);
 	              return
 	            }
 
@@ -25883,14 +25959,17 @@ function requireReceiver () {
 	              this.#info.fin,
 	              (error, data) => {
 	                if (error) {
-	                  failWebsocketConnection(this.ws, error.message);
+	                  const code = error instanceof MessageSizeExceededError ? 1009 : 1007;
+	                  failWebsocketConnectionWithCode(this.ws, code, error.message);
 	                  return
 	                }
 
-	                this.writeFragments(data);
+	                if (!this.writeFragments(data)) {
+	                  return
+	                }
 
 	                if (this.#maxPayloadSize > 0 && this.#fragmentsBytes > this.#maxPayloadSize) {
-	                  failWebsocketConnection(this.ws, new MessageSizeExceededError().message);
+	                  failWebsocketConnectionWithCode(this.ws, 1009, new MessageSizeExceededError().message);
 	                  return
 	                }
 
@@ -25960,8 +26039,17 @@ function requireReceiver () {
 	  }
 
 	  writeFragments (fragment) {
+	    if (
+	      this.#maxFragments > 0 &&
+	      this.#fragments.length === this.#maxFragments
+	    ) {
+	      failWebsocketConnectionWithCode(this.ws, 1008, 'Too many message fragments');
+	      return false
+	    }
+
 	    this.#fragmentsBytes += fragment.length;
 	    this.#fragments.push(fragment);
+	    return true
 	  }
 
 	  consumeFragments () {
@@ -26664,9 +26752,12 @@ function requireWebsocket () {
 	    // once this happens, the connection is open
 	    this[kResponse] = response;
 
-	    const maxPayloadSize = this[kController]?.dispatcher?.webSocketOptions?.maxPayloadSize;
+	    const webSocketOptions = this[kController]?.dispatcher?.webSocketOptions;
+	    const maxFragments = webSocketOptions?.maxFragments;
+	    const maxPayloadSize = webSocketOptions?.maxPayloadSize;
 
 	    const parser = new ByteParser(this, parsedExtensions, {
+	      maxFragments,
 	      maxPayloadSize
 	    });
 	    parser.on('drain', onParserDrain);
@@ -30027,7 +30118,7 @@ class RequestError extends Error {
 // pkg/dist-src/index.js
 
 // pkg/dist-src/version.js
-var VERSION$4 = "10.0.10";
+var VERSION$4 = "10.0.11";
 
 // pkg/dist-src/defaults.js
 var defaults_default = {
@@ -30177,9 +30268,10 @@ function toErrorMessage(data) {
   if (data instanceof ArrayBuffer) {
     return "Unknown error";
   }
-  if ("message" in data) {
-    const suffix = "documentation_url" in data ? ` - ${data.documentation_url}` : "";
-    return Array.isArray(data.errors) ? `${data.message}: ${data.errors.map((v) => JSON.stringify(v)).join(", ")}${suffix}` : `${data.message}${suffix}`;
+  if (typeof data === "object" && data !== null && "message" in data) {
+    const objectData = data;
+    const suffix = "documentation_url" in objectData ? ` - ${objectData.documentation_url}` : "";
+    return Array.isArray(objectData.errors) ? `${objectData.message}: ${objectData.errors.map((v) => JSON.stringify(v)).join(", ")}${suffix}` : `${objectData.message}${suffix}`;
   }
   return `Unknown error: ${JSON.stringify(data)}`;
 }
@@ -33111,8 +33203,8 @@ function getOctokit(token, options, ...additionalPlugins) {
     return new GitHubWithPlugins(getOctokitOptions(token));
 }
 
-//Maximum amount of files to process, PRs with more files will not be processed.
-const FILE_LIMIT = 1000;
+//Maximum amount of files to process per page.
+const FILES_PER_PAGE = 300;
 //Returns a map of file path -> list of owners
 function ParseCodeownersFile(filePath) {
     const codeowners = new Map();
@@ -33138,11 +33230,12 @@ function ParseCodeownersFile(filePath) {
     return codeowners;
 }
 //Returns the list of owners to notify from the list of modified files
-function GetOwnersWithModifiedFiles(codeowners, modifiedFiles) {
-    const regex_files = new Map();
-    const owners = new Set();
+function GetOwnersWithModifiedFiles(codeowners, modifiedFiles, regex_files, owners) {
     for (const file of modifiedFiles) {
         for (const [owner, paths] of codeowners.entries()) {
+            if (owners.has(owner)) {
+                continue;
+            }
             for (const ownerPath of paths) {
                 let regex_match = regex_files.get(ownerPath);
                 if (!regex_match) {
@@ -33163,7 +33256,7 @@ function GetOwnersWithModifiedFiles(codeowners, modifiedFiles) {
                     }
                     //add regex to registry to match this exact path if it appearas again in the file
                     regex_match = new RegExp(regex);
-                    regex_files.set(file, regex_match);
+                    regex_files.set(ownerPath, regex_match);
                 }
                 if (file.match(regex_match)) {
                     owners.add(owner);
@@ -33171,7 +33264,6 @@ function GetOwnersWithModifiedFiles(codeowners, modifiedFiles) {
             }
         }
     }
-    return Array.from(owners);
 }
 async function run() {
     //# Part 1: Getting all code owners based on their modified files
@@ -33188,27 +33280,25 @@ async function run() {
         info(`Parsing codeowner file at: ${workspace_file}`);
         // Get github client using the provided token
         const octokit = getOctokit(getInput('token'));
-        let response = await octokit.rest.pulls.get({
-            owner: core_owner,
-            repo: core_repo,
-            pull_number: pull_number
-        });
-        if (response.data.changed_files > FILE_LIMIT) {
-            setFailed(`PR has ${response.data.changed_files} files, which is more than the limit of ${FILE_LIMIT}. Skipping codeowner assignment.`);
-            return;
-        }
         // Parse the codeowners file and get the modified files in the PR, then get the owners with modified files
         const codeowners = ParseCodeownersFile(workspace_file);
-        const modifiedFiles = (await octokit.paginate(octokit.rest.pulls.listFiles.endpoint.merge({
+        // Get all codeowners of modified files. We process each page of files and push the results onto the final list
+        const modifiedFilesIterator = octokit.paginate.iterator(octokit.rest.pulls.listFiles.endpoint.merge({
             owner: core_owner,
             repo: core_repo,
-            pull_number: pull_number
-        })))
-            .flatMap(modified_files => modified_files)
-            .map(modified_file => modified_file.filename);
-        const ownersWithModifiedFiles = GetOwnersWithModifiedFiles(codeowners, modifiedFiles);
+            pull_number: pull_number,
+            per_page: FILES_PER_PAGE
+        }));
+        // Push results per page onto the final array
+        const ownerPathRegexMap = new Map();
+        const ownersWithModifiedFiles = new Set();
+        for await (const page_set of modifiedFilesIterator) {
+            for (const page of page_set.data) {
+                GetOwnersWithModifiedFiles(codeowners, page.map(modified_file => modified_file.filename), ownerPathRegexMap, ownersWithModifiedFiles);
+            }
+        }
         // Display all code owners
-        info(`Owners With Modified Files: ${ownersWithModifiedFiles.join(' ')}`);
+        info(`Owners With Modified Files: ${ownersWithModifiedFiles.values().toArray().join(' ')}`);
         //# Part 2: Requesting reviews based on owners listed above
         const trimmed_owners = [];
         //Remove the @ symbol at the start of every owner name
@@ -33216,7 +33306,7 @@ async function run() {
             trimmed_owners.push(owner.replace('@', ''));
         }
         //Remove PR author from the user list
-        const index = trimmed_owners.indexOf(response.data.user.login);
+        const index = trimmed_owners.indexOf(context.payload.pull_request?.user.login);
         if (index >= 0) {
             trimmed_owners.splice(index, 1);
         }

@@ -1,10 +1,10 @@
 import {getInput, setFailed, info, notice} from '@actions/core'
 import {context, getOctokit} from '@actions/github'
 import {readFileSync} from 'fs'
-import {RestEndpointMethodTypes} from '@octokit/plugin-rest-endpoint-methods'
+import {PaginatingEndpoints} from '@octokit/plugin-paginate-rest'
 
-//Maximum amount of files to process, PRs with more files will not be processed.
-const FILE_LIMIT = 1000
+//Maximum amount of files to process per page.
+const FILES_PER_PAGE = 300
 
 //Returns a map of file path -> list of owners
 function ParseCodeownersFile(filePath: string): Map<string, string[]> {
@@ -42,14 +42,15 @@ function ParseCodeownersFile(filePath: string): Map<string, string[]> {
 //Returns the list of owners to notify from the list of modified files
 function GetOwnersWithModifiedFiles(
     codeowners: Map<string, string[]>,
-    modifiedFiles: string[]
-): string[] {
-    const regex_files: Map<string, RegExp> = new Map()
-
-    const owners: Set<string> = new Set()
-
+    modifiedFiles: string[],
+    regex_files: Map<string, RegExp>,
+    owners: Set<string>
+): void {
     for (const file of modifiedFiles) {
         for (const [owner, paths] of codeowners.entries()) {
+            if (owners.has(owner)) {
+                continue
+            }
             for (const ownerPath of paths) {
                 let regex_match: RegExp | undefined = regex_files.get(ownerPath)
                 if (!regex_match) {
@@ -74,7 +75,7 @@ function GetOwnersWithModifiedFiles(
 
                     //add regex to registry to match this exact path if it appearas again in the file
                     regex_match = new RegExp(regex)
-                    regex_files.set(file, regex_match)
+                    regex_files.set(ownerPath, regex_match)
                 }
 
                 if (file.match(regex_match)) {
@@ -83,8 +84,6 @@ function GetOwnersWithModifiedFiles(
             }
         }
     }
-
-    return Array.from(owners)
 }
 
 async function run(): Promise<void> {
@@ -108,44 +107,42 @@ async function run(): Promise<void> {
             getInput('token')
         )
 
-        let response: RestEndpointMethodTypes['pulls']['get']['response'] =
-            await octokit.rest.pulls.get({
-                owner: core_owner,
-                repo: core_repo,
-                pull_number: pull_number
-            })
-
-        if (response.data.changed_files > FILE_LIMIT) {
-            setFailed(
-                `PR has ${response.data.changed_files} files, which is more than the limit of ${FILE_LIMIT}. Skipping codeowner assignment.`
-            )
-            return
-        }
-
         // Parse the codeowners file and get the modified files in the PR, then get the owners with modified files
         const codeowners: Map<string, string[]> =
             ParseCodeownersFile(workspace_file)
 
-        const modifiedFiles: string[] = (
-            await octokit.paginate<
-                RestEndpointMethodTypes['pulls']['listFiles']['response']['data']
-            >(
-                octokit.rest.pulls.listFiles.endpoint.merge({
-                    owner: core_owner,
-                    repo: core_repo,
-                    pull_number: pull_number
-                })
-            )
-        )
-            .flatMap(modified_files => modified_files)
-            .map(modified_file => modified_file.filename)
-        const ownersWithModifiedFiles: string[] = GetOwnersWithModifiedFiles(
-            codeowners,
-            modifiedFiles
+        // Get all codeowners of modified files. We process each page of files and push the results onto the final list
+        const modifiedFilesIterator = octokit.paginate.iterator<
+            PaginatingEndpoints['GET /repos/{owner}/{repo}/pulls/{pull_number}/files']['response']['data']
+        >(
+            octokit.rest.pulls.listFiles.endpoint.merge<
+                PaginatingEndpoints['GET /repos/{owner}/{repo}/pulls/{pull_number}/files']['parameters']
+            >({
+                owner: core_owner,
+                repo: core_repo,
+                pull_number: pull_number,
+                per_page: FILES_PER_PAGE
+            })
         )
 
+        // Push results per page onto the final array
+        const ownerPathRegexMap: Map<string, RegExp> = new Map()
+        const ownersWithModifiedFiles: Set<string> = new Set()
+        for await (const page_set of modifiedFilesIterator) {
+            for (const page of page_set.data) {
+                GetOwnersWithModifiedFiles(
+                    codeowners,
+                    page.map(modified_file => modified_file.filename),
+                    ownerPathRegexMap,
+                    ownersWithModifiedFiles
+                )
+            }
+        }
+
         // Display all code owners
-        info(`Owners With Modified Files: ${ownersWithModifiedFiles.join(' ')}`)
+        info(
+            `Owners With Modified Files: ${ownersWithModifiedFiles.values().toArray().join(' ')}`
+        )
 
         //# Part 2: Requesting reviews based on owners listed above
         const trimmed_owners: string[] = []
@@ -156,7 +153,9 @@ async function run(): Promise<void> {
         }
 
         //Remove PR author from the user list
-        const index = trimmed_owners.indexOf(response.data.user.login)
+        const index = trimmed_owners.indexOf(
+            context.payload.pull_request?.user.login
+        )
         if (index >= 0) {
             trimmed_owners.splice(index, 1)
         }
