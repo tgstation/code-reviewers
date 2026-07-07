@@ -171,12 +171,6 @@ async function run(): Promise<void> {
             trimmed_owners.splice(index, 1)
         }
 
-        //No reviewers so stop here
-        if (!trimmed_owners.length) {
-            info('No reviewers to call')
-            return
-        }
-
         //Remove Invalid users
         for (const user of trimmed_owners.toReversed()) {
             try {
