@@ -33340,6 +33340,19 @@ async function run() {
             info('No reviewers to call');
             return;
         }
+        //Remove review requests from users no longer impacted
+        const currentlyRequested = (response.data.requested_reviewers ?? []).map(r => r.login);
+        const allCodeowners = Array.from(codeowners.keys()).map(o => o.replace('@', ''));
+        const toRemove = currentlyRequested.filter(r => !trimmed_owners.includes(r) && allCodeowners.includes(r));
+        if (toRemove.length) {
+            info(`Removing review requests from: ${toRemove.join(', ')}`);
+            await octokit.rest.pulls.removeRequestedReviewers({
+                owner: core_owner,
+                repo: core_repo,
+                pull_number: pull_number,
+                reviewers: toRemove
+            });
+        }
         //Finally notify all users for review
         await octokit.rest.pulls.requestReviewers({
             owner: core_owner,
