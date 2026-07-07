@@ -33302,10 +33302,10 @@ async function run() {
         // Push results per page onto the final array
         const ownerPathRegexMap = new Map();
         const ownersWithModifiedFiles = new Set();
-        for await (const page_set of modifiedFilesIterator) {
-            for (const page of page_set.data) {
-                GetOwnersWithModifiedFiles(codeowners, page.map(modified_file => modified_file.filename), ownerPathRegexMap, ownersWithModifiedFiles);
-            }
+        for await (const page of modifiedFilesIterator) {
+            GetOwnersWithModifiedFiles(codeowners, page.data
+                .flatMap(files => files)
+                .map(modified_file => modified_file.filename), ownerPathRegexMap, ownersWithModifiedFiles);
         }
         // Display all code owners
         info(`Owners With Modified Files: ${ownersWithModifiedFiles.values().toArray().join(' ')}`);
@@ -33339,11 +33339,6 @@ async function run() {
                 trimmed_owners.splice(trimmed_owners.indexOf(user), 1);
             }
         }
-        //No reviewers so stop here
-        if (!trimmed_owners.length) {
-            info('No reviewers to call');
-            return;
-        }
         //Remove review requests from users no longer impacted
         const currentlyRequested = (pull_request.requested_reviewers ?? []).map((r) => r.login);
         const toRemove = currentlyRequested.filter(r => !trimmed_owners.includes(r) && codeowners.has('@' + r));
@@ -33355,6 +33350,11 @@ async function run() {
                 pull_number: pull_number,
                 reviewers: toRemove
             });
+        }
+        //No reviewers so stop here
+        if (!trimmed_owners.length) {
+            info('No reviewers to call');
+            return;
         }
         //Finally notify all users for review
         await octokit.rest.pulls.requestReviewers({

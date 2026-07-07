@@ -141,15 +141,15 @@ async function run(): Promise<void> {
         // Push results per page onto the final array
         const ownerPathRegexMap: Map<string, RegExp> = new Map()
         const ownersWithModifiedFiles: Set<string> = new Set()
-        for await (const page_set of modifiedFilesIterator) {
-            for (const page of page_set.data) {
-                GetOwnersWithModifiedFiles(
-                    codeowners,
-                    page.map(modified_file => modified_file.filename),
-                    ownerPathRegexMap,
-                    ownersWithModifiedFiles
-                )
-            }
+        for await (const page of modifiedFilesIterator) {
+            GetOwnersWithModifiedFiles(
+                codeowners,
+                page.data
+                    .flatMap(files => files)
+                    .map(modified_file => modified_file.filename),
+                ownerPathRegexMap,
+                ownersWithModifiedFiles
+            )
         }
 
         // Display all code owners
@@ -193,12 +193,6 @@ async function run(): Promise<void> {
             }
         }
 
-        //No reviewers so stop here
-        if (!trimmed_owners.length) {
-            info('No reviewers to call')
-            return
-        }
-
         //Remove review requests from users no longer impacted
         const currentlyRequested: string[] = (
             pull_request.requested_reviewers ?? []
@@ -214,6 +208,12 @@ async function run(): Promise<void> {
                 pull_number: pull_number,
                 reviewers: toRemove
             })
+        }
+
+        //No reviewers so stop here
+        if (!trimmed_owners.length) {
+            info('No reviewers to call')
+            return
         }
 
         //Finally notify all users for review
