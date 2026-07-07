@@ -33273,11 +33273,15 @@ function GetOwnersWithModifiedFiles(codeowners, modifiedFiles, regex_files, owne
 }
 async function run() {
     //# Part 1: Getting all code owners based on their modified files
+    const pull_request = context.payload.pull_request;
+    if (!pull_request) {
+        return;
+    }
     try {
         const workspace_file = `${process.env.GITHUB_WORKSPACE}${getInput('file')}`; //${{ github.workspace }}
         const core_owner = context.repo.owner; //${{ github.repository_owner }}
         const core_repo = context.repo.repo; //${{ github.repository }}
-        const pull_number = context.payload.pull_request?.number; //${{ github.event.pull_request.number }}
+        const pull_number = pull_request.number; //${{ github.event.pull_request.number }}
         if (!pull_number) {
             setFailed('No pull request payload found');
             return;
@@ -33312,7 +33316,7 @@ async function run() {
             trimmed_owners.push(owner.replace('@', ''));
         }
         //Remove PR author from the user list
-        const index = trimmed_owners.indexOf(context.payload.pull_request?.user.login);
+        const index = trimmed_owners.indexOf(pull_request.user.login);
         if (index >= 0) {
             trimmed_owners.splice(index, 1);
         }
@@ -33341,11 +33345,10 @@ async function run() {
             return;
         }
         //Remove review requests from users no longer impacted
-        const currentlyRequested = (response.data.requested_reviewers ?? []).map(r => r.login);
-        const allCodeowners = Array.from(codeowners.keys()).map(o => o.replace('@', ''));
-        const toRemove = currentlyRequested.filter(r => !trimmed_owners.includes(r) && allCodeowners.includes(r));
+        const currentlyRequested = (pull_request.requested_reviewers ?? []).map((r) => r.login);
+        const toRemove = currentlyRequested.filter(r => !trimmed_owners.includes(r) && codeowners.has('@' + r));
         if (toRemove.length) {
-            info(`Removing review requests from: ${toRemove.join(', ')}`);
+            info(`Removing review requests from: ${toRemove.join(' ')}`);
             await octokit.rest.pulls.removeRequestedReviewers({
                 owner: core_owner,
                 repo: core_repo,
